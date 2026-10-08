@@ -111,14 +111,18 @@ class TorrServerClient:
                 return resp.json()
             return {}
         except Exception:
-            # Íèêîãäà íå ïðîáðàñûâàåì èñêëþ÷åíèå íàðóæó, ÷òîáû íå ðîíÿòü RPC — âåðí¸ì ïóñòîé îòâåò
+            # ÐÐ¸ÐºÐ¾Ð³Ð´Ð° Ð½Ðµ Ð¿Ñ€Ð¾Ð±Ñ€Ð°ÑÑ‹Ð²Ð°ÐµÐ¼ Ð¸ÑÐºÐ»ÑŽÑ‡ÐµÐ½Ð¸Ðµ Ð½Ð°Ñ€ÑƒÐ¶Ñƒ, Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð½Ðµ Ñ€Ð¾Ð½ÑÑ‚ÑŒ RPC â€” Ð²ÐµÑ€Ð½Ñ‘Ð¼ Ð¿ÑƒÑÑ‚Ð¾Ð¹ Ð¾Ñ‚Ð²ÐµÑ‚
             return {}
 
-    async def _list_hashes(self) -> List[str]:
+    async def _list_items(self) -> List[Dict[str, Any]]:
+        # "list" reads TorrServer's DB and does NOT activate torrents, unlike "get"
         data = await self._post("/torrents", {"action": "list"})
-        hashes: List[str] = []
         items = data if isinstance(data, list) else data.get("items") or data.get("torrents") or []
-        for item in items:
+        return [item for item in items if isinstance(item, dict)]
+
+    async def _list_hashes(self) -> List[str]:
+        hashes: List[str] = []
+        for item in await self._list_items():
             h = item.get("hash") or item.get("Hash")
             if isinstance(h, str):
                 hashes.append(h)
@@ -134,6 +138,7 @@ class TorrServerClient:
                     "hash": str(item.get("hash") or item.get("Hash") or "").lower(),
                     "title": str(item.get("title") or item.get("name") or ""),
                     "category": str(item.get("category") or ""),
+                    "stat": int(item.get("stat") or 0),
                 }
             )
         return results
@@ -147,10 +152,10 @@ class TorrServerClient:
         }
 
     async def torrent_add(self, filename: Optional[str], metainfo: Optional[str], category: Optional[Union[str, List[str]]], metadata_title: Optional[str] = None) -> Dict[str, Any]:
-        # Ïåðåä äîáàâëåíèåì ñíèìåì ñïèñîê õýøåé, ÷òîáû ïîñëå äîáàâèòü îòëè÷èÿ
+        # ÐŸÐµÑ€ÐµÐ´ Ð´Ð¾Ð±Ð°Ð²Ð»ÐµÐ½Ð¸ÐµÐ¼ ÑÐ½Ð¸Ð¼ÐµÐ¼ ÑÐ¿Ð¸ÑÐ¾Ðº Ñ…ÑÑˆÐµÐ¹, Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð¿Ð¾ÑÐ»Ðµ Ð´Ð¾Ð±Ð°Ð²Ð¸Ñ‚ÑŒ Ð¾Ñ‚Ð»Ð¸Ñ‡Ð¸Ñ
         before_hashes = set([h.lower() for h in (await self._list_hashes())])
 
-        # Ïðèîðèòåò: åñëè åñòü metainfo (base64 .torrent), èñïîëüçóåì çàãðóçêó íà /torrent/upload
+        # ÐŸÑ€Ð¸Ð¾Ñ€Ð¸Ñ‚ÐµÑ‚: ÐµÑÐ»Ð¸ ÐµÑÑ‚ÑŒ metainfo (base64 .torrent), Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÐ¼ Ð·Ð°Ð³Ñ€ÑƒÐ·ÐºÑƒ Ð½Ð° /torrent/upload
         if metainfo:
             try:
                 import base64
@@ -159,7 +164,7 @@ class TorrServerClient:
                 import asyncio
 
                 decoded = base64.b64decode(metainfo)
-                # Èñïîëüçóåì multipart íà /torrent/upload
+                # Ð˜ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÐ¼ multipart Ð½Ð° /torrent/upload
                 url = f"{self._base_url}/torrent/upload"
                 form = aiohttp.FormData()
                 form.add_field("file", decoded, filename="radarr.torrent", content_type="application/x-bittorrent")
@@ -186,9 +191,9 @@ class TorrServerClient:
                 elif isinstance(category, str):
                     payload["category"] = category
             data = await self._post("/torrents", payload)
-        # Ïîïûòêà ¹1: âçÿòü õýø èç îòâåòà
+        # ÐŸÐ¾Ð¿Ñ‹Ñ‚ÐºÐ° â„–1: Ð²Ð·ÑÑ‚ÑŒ Ñ…ÑÑˆ Ð¸Ð· Ð¾Ñ‚Ð²ÐµÑ‚Ð°
         h = (data.get("hash") or data.get("torrent", {}).get("hash") or "").lower()
-        # Ïîïûòêà ¹2: åñëè åñòü magnet â filename — âûòàùèòü èç xt=urn:btih:
+        # ÐŸÐ¾Ð¿Ñ‹Ñ‚ÐºÐ° â„–2: ÐµÑÐ»Ð¸ ÐµÑÑ‚ÑŒ magnet Ð² filename â€” Ð²Ñ‹Ñ‚Ð°Ñ‰Ð¸Ñ‚ÑŒ Ð¸Ð· xt=urn:btih:
         if not h and filename and isinstance(filename, str) and filename.startswith("magnet:"):
             try:
                 from urllib.parse import parse_qs, urlparse
@@ -199,7 +204,7 @@ class TorrServerClient:
                     h = xt.split(":", 2)[-1].lower()
             except Exception:
                 pass
-        # Ïîïûòêà ¹3: ïåðåñíÿòü ñïèñîê è íàéòè äîáàâèâøèéñÿ õýø
+        # ÐŸÐ¾Ð¿Ñ‹Ñ‚ÐºÐ° â„–3: Ð¿ÐµÑ€ÐµÑÐ½ÑÑ‚ÑŒ ÑÐ¿Ð¸ÑÐ¾Ðº Ð¸ Ð½Ð°Ð¹Ñ‚Ð¸ Ð´Ð¾Ð±Ð°Ð²Ð¸Ð²ÑˆÐ¸Ð¹ÑÑ Ñ…ÑÑˆ
         if not h:
             after_hashes = set([x.lower() for x in (await self._list_hashes())])
             diff = list(after_hashes - before_hashes)
@@ -218,30 +223,27 @@ class TorrServerClient:
         hashes = await self._list_hashes()
         self._ids.rebuild(hashes)
 
-    async def _get_status(self, hash_value: str) -> Optional[TorrentItem]:
-        data = await self._post("/torrents", {"action": "get", "hash": hash_value})
-        # TorrServer can return data directly or wrapped in "torrent" key
-        if isinstance(data, dict):
-            t = data.get("torrent") if "torrent" in data else data
-        else:
-            t = data
-        if not isinstance(t, dict):
-            return None
-        total = int(t.get("torrent_size") or t.get("TorrentSize") or 0)
-        loaded = int(t.get("loaded_size") or t.get("LoadedSize") or 0)
-        dl = float(t.get("download_speed") or 0)
-        ul = float(t.get("upload_speed") or 0)
-        stat_code = int(t.get("stat") or 0)
-        name = str(t.get("name") or t.get("title") or "")
+    @staticmethod
+    def _name_from_list(t: Dict[str, Any]) -> str:
+        # Inactive entries carry no "name"; the torrent's info name is the root of its file paths
+        try:
+            files = json.loads(t.get("data") or "{}").get("TorrServer", {}).get("Files") or []
+            path = str(files[0].get("path") or "") if files else ""
+        except Exception:
+            path = ""
+        return path.split("/", 1)[0] or str(t.get("name") or t.get("title") or "")
+
+    def _item_from_list(self, t: Dict[str, Any]) -> TorrentItem:
+        hash_value = str(t.get("hash") or t.get("Hash") or "").lower()
         return TorrentItem(
             id=self._ids.get_or_create(hash_value),
             hash=hash_value,
-            name=name,
-            total_size=total,
-            loaded_size=loaded,
-            download_speed=dl,
-            upload_speed=ul,
-            status_code=stat_code,
+            name=self._name_from_list(t),
+            total_size=int(t.get("torrent_size") or t.get("TorrentSize") or 0),
+            loaded_size=int(t.get("loaded_size") or t.get("LoadedSize") or 0),
+            download_speed=float(t.get("download_speed") or 0),
+            upload_speed=float(t.get("upload_speed") or 0),
+            status_code=int(t.get("stat") or 0),
             status_string=str(t.get("stat_string") or ""),
         )
 
@@ -257,7 +259,7 @@ class TorrServerClient:
         files = t.get("file_stats") or []
         if not isinstance(files, list) or not files:
             return None
-        # Ïðåäïî÷èòàåì ñàìûé áîëüøîé ôàéë (÷àñòî ýòî íóæíîå âèäåî)
+        # ÐŸÑ€ÐµÐ´Ð¿Ð¾Ñ‡Ð¸Ñ‚Ð°ÐµÐ¼ ÑÐ°Ð¼Ñ‹Ð¹ Ð±Ð¾Ð»ÑŒÑˆÐ¾Ð¹ Ñ„Ð°Ð¹Ð» (Ñ‡Ð°ÑÑ‚Ð¾ ÑÑ‚Ð¾ Ð½ÑƒÐ¶Ð½Ð¾Ðµ Ð²Ð¸Ð´ÐµÐ¾)
         best = None
         best_len = -1
         for f in files:
@@ -343,8 +345,8 @@ class TorrServerClient:
             return 6  # seeding
         if item.status_code == 4:
             return 0  # closed -> stopped
-        if item.status_code in (2, 3):
-            return 4  # downloading
+        if item.status_code in (2, 3, 5):
+            return 4  # downloading (5 = in db, not activated)
         return 3  # default: download wait
 
     def _percent_done(self, item: TorrentItem) -> float:
@@ -352,23 +354,43 @@ class TorrServerClient:
             return 0.0
         return clamp(item.loaded_size / float(item.total_size), 0.0, 1.0)
 
-    async def torrent_get(self, ids: Optional[Union[List[Union[int, str]], Union[int, str]]], fields: List[str]) -> List[Dict[str, Any]]:
-        await self._refresh_id_map()
+    def _pending_import(self, hash_value: str) -> Optional[Tuple[str, str]]:
+        """Return (download_dir, name) if this torrent has .strm files waiting to be imported."""
+        metadata = self._ids.get_metadata(hash_value) or {}
+        download_dir = metadata.get("download_dir")
+        strm_files = [f for f in metadata.get("strm_files") or [] if isinstance(f, str)]
+        if not download_dir or not any(os.path.exists(f) for f in strm_files):
+            return None
+        # Sonarr/Radarr import from downloadDir + name, so name must be the top-level
+        # entry the .strm files were written under (a folder, or the .strm itself)
+        name = os.path.relpath(strm_files[0], download_dir).split(os.sep, 1)[0]
+        return download_dir, name
+
+    async def torrent_get(self, ids: Optional[Union[List[Union[int, str]], Union[int, str]]], fields: List[str], pending_only: bool = False) -> List[Dict[str, Any]]:
+        """With pending_only, report only torrents whose .strm files await import, as finished downloads.
+
+        Everything else is hidden from Sonarr/Radarr: TorrServer never "completes" a torrent,
+        so they would otherwise sit in the queue as downloading forever.
+        """
+        items = await self._list_items()
+        by_hash = {str(i.get("hash") or i.get("Hash") or "").lower(): i for i in items}
+        by_hash.pop("", None)
+        self._ids.rebuild(list(by_hash))
         selected_hashes: List[str] = []
-        # Ñïåö. çíà÷åíèå Transmission: "recently-active" — âåðíóòü àêòèâíûå/âñå
+        # Ð¡Ð¿ÐµÑ†. Ð·Ð½Ð°Ñ‡ÐµÐ½Ð¸Ðµ Transmission: "recently-active" â€” Ð²ÐµÑ€Ð½ÑƒÑ‚ÑŒ Ð°ÐºÑ‚Ð¸Ð²Ð½Ñ‹Ðµ/Ð²ÑÐµ
         def includes_recently_active(value: Any) -> bool:
             return isinstance(value, str) and value.lower() == "recently-active"
 
         if ids is None:
-            selected_hashes = await self._list_hashes()
+            selected_hashes = list(by_hash)
         else:
             if includes_recently_active(ids):
-                selected_hashes = await self._list_hashes()
+                selected_hashes = list(by_hash)
             else:
                 if not isinstance(ids, list):
                     ids = [ids]
                 if any(includes_recently_active(v) for v in ids):
-                    selected_hashes = await self._list_hashes()
+                    selected_hashes = list(by_hash)
                 else:
                     for ident in ids:
                         if isinstance(ident, int):
@@ -380,8 +402,37 @@ class TorrServerClient:
 
         results: List[Dict[str, Any]] = []
         for h in selected_hashes:
-            st = await self._get_status(h)
-            if st is None:
+            entry = by_hash.get(h)
+            if entry is None:
+                continue
+            st = self._item_from_list(entry)
+            if pending_only:
+                pending = self._pending_import(h)
+                if pending is None:
+                    continue
+                download_dir, name = pending
+                results.append({
+                    "id": st.id,
+                    "hashString": st.hash,
+                    "name": name,
+                    "downloadDir": download_dir,
+                    # Stopped + finished + seed ratio limit reached: Sonarr/Radarr import by moving
+                    # the .strm files and then remove the download (the torrent stays in TorrServer)
+                    "status": 0,
+                    "isFinished": True,
+                    "percentDone": 1.0,
+                    "leftUntilDone": 0,
+                    "totalSize": st.total_size,
+                    "downloadedEver": st.total_size,
+                    "uploadedEver": 0,
+                    "seedRatioMode": 1,
+                    "seedRatioLimit": 0,
+                    "eta": -1,
+                    "errorString": "",
+                    "rateDownload": 0,
+                    "rateUpload": 0,
+                    "peersConnected": 0,
+                })
                 continue
             result: Dict[str, Any] = {
                 "id": st.id,

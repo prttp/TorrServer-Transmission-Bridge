@@ -11,20 +11,20 @@ This bridge acts as a Transmission download client for Sonarr/Radarr, but instea
 4. Enables Jellyfin to play content by streaming directly from TorrServer
 
 **Key Features:**
-- ?? No local storage needed - stream torrents on-demand
-- ?? Full Sonarr/Radarr integration with metadata
-- ?? Works with Jellyfin for seamless playback
-- ?? Automatic cleanup of orphaned `.strm` files
-- ?? Built-in TorrServer diagnostics and monitoring
+- No local storage needed - stream torrents on-demand
+- Full Sonarr/Radarr integration with metadata
+- Works with Jellyfin for seamless playback
+- Automatic cleanup of orphaned `.strm` files
+- Built-in TorrServer diagnostics and monitoring
 
 ## Architecture
 
 ```
-Sonarr/Radarr ? (Transmission RPC) ? ts-bridge ? (REST API) ? TorrServer
-                                          ?
+Sonarr/Radarr → (Transmission RPC) → ts-bridge → (REST API) → TorrServer
+                                          ↓
                                     .strm files
-                                          ?
-                                      Jellyfin ? TorrServer stream
+                                          ↓
+                                      Jellyfin → TorrServer stream
 ```
 
 ## Quick Start
@@ -62,6 +62,11 @@ services:
       
       # Optional: logging
       # - LOG_LEVEL=INFO
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     volumes:
       - /path/to/data:/data
       - ts-bridge-state:/data/ts-bridge  # Stores ids.json and metadata
@@ -93,7 +98,7 @@ volumes:
 ### Sonarr/Radarr Setup
 
 1. **Add Download Client:**
-   - Settings ? Download Clients ? Add ? Transmission
+   - Settings → Download Clients → Add → Transmission
    - Host: `127.0.0.1` (or your bridge host)
   - Port: `9091`
   - SSL: off
@@ -104,7 +109,7 @@ volumes:
    - **Category:** Leave empty (bridge auto-detects from path)
 
 2. **Enable Completed Download Handling:**
-   - Settings ? Download Clients
+   - Settings → Download Clients
    - Check "Enable Completed Download Handling"
    - Check "Remove" under "Completed Download Handling"
 
