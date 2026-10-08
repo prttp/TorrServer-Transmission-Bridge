@@ -17,6 +17,9 @@ logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+# httpx/httpcore log every request to TorrServer (DEBUG: ~10 lines each), which floods the log
+for noisy_logger in ("httpx", "httpcore"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -259,7 +262,7 @@ async def transmission_rpc_get(
     x_transmission_session_id: Optional[str] = Header(default=None, alias=SESSION_HEADER),
 ):
     ensure_basic_auth(request)
-    # Âñåãäà âîçâðàùàåì 409 ñ àêòóàëüíûì X-Transmission-Session-Id, ÷òîáû êëèåíòû ìîãëè ïðîäîëæèòü õýíäøåéê
+    # Ð’ÑÐµÐ³Ð´Ð° Ð²Ð¾Ð·Ð²Ñ€Ð°Ñ‰Ð°ÐµÐ¼ 409 Ñ Ð°ÐºÑ‚ÑƒÐ°Ð»ÑŒÐ½Ñ‹Ð¼ X-Transmission-Session-Id, Ñ‡Ñ‚Ð¾Ð±Ñ‹ ÐºÐ»Ð¸ÐµÐ½Ñ‚Ñ‹ Ð¼Ð¾Ð³Ð»Ð¸ Ð¿Ñ€Ð¾Ð´Ð¾Ð»Ð¶Ð¸Ñ‚ÑŒ Ñ…ÑÐ½Ð´ÑˆÐµÐ¹Ðº
     response = Response(status_code=409)
     response.headers[SESSION_HEADER] = _session_id
     return response
@@ -277,7 +280,7 @@ async def transmission_rpc(
         return invalid_session
 
     if data is None:
-        # Ïóñòîå òåëî äîïóñòèìî äëÿ íåêîòîðûõ ïðîâåðîê; âåðí¸ì ìèíèìàëüíûé «óñïåõ»
+        # ÐŸÑƒÑÑ‚Ð¾Ðµ Ñ‚ÐµÐ»Ð¾ Ð´Ð¾Ð¿ÑƒÑÑ‚Ð¸Ð¼Ð¾ Ð´Ð»Ñ Ð½ÐµÐºÐ¾Ñ‚Ð¾Ñ€Ñ‹Ñ… Ð¿Ñ€Ð¾Ð²ÐµÑ€Ð¾Ðº; Ð²ÐµÑ€Ð½Ñ‘Ð¼ Ð¼Ð¸Ð½Ð¸Ð¼Ð°Ð»ÑŒÐ½Ñ‹Ð¹ Â«ÑƒÑÐ¿ÐµÑ…Â»
         return TransmissionResponse(result="success", tag=None, arguments={})
 
     method = data.method
@@ -411,7 +414,7 @@ async def transmission_rpc(
     if method == "torrent-get":
         fields: List[str] = args.get("fields") or []
         ids = args.get("ids")
-        torrents = await client.torrent_get(ids=ids, fields=fields)
+        torrents = await client.torrent_get(ids=ids, fields=fields, pending_only=True)
         return TransmissionResponse(result="success", tag=tag, arguments={"torrents": torrents})
 
     if method == "torrent-remove":
@@ -505,6 +508,21 @@ async def torrserver_status() -> Dict[str, Any]:
     for torrent in torrents:
         h = torrent.get("hash")
         if h:
+            if torrent.get("stat") in (4, 5):
+                # "get" would activate an inactive torrent, so report it from the list entry
+                stats.append({
+                    "hash": h[:8],
+                    "hash_full": h,
+                    "name": torrent.get("title", "Unknown")[:50],
+                    "status_code": torrent.get("stat"),
+                    "status": "InDB" if torrent.get("stat") == 5 else "Inactive",
+                    "download_speed_mbps": 0.0,
+                    "upload_speed_mbps": 0.0,
+                    "loaded_mb": 0.0,
+                    "total_mb": 0.0,
+                    "percent": 0,
+                })
+                continue
             try:
                 # Get detailed status from TorrServer
                 data = await client._post("/torrents", {"action": "get", "hash": h})
@@ -512,7 +530,7 @@ async def torrserver_status() -> Dict[str, Any]:
                     t = data.get("torrent") if "torrent" in data else data
                     if isinstance(t, dict):
                         status_code = int(t.get("stat") or 0)
-                        status_names = {0: "InDB", 1: "Stat", 2: "Working", 3: "Preload", 4: "Closed"}
+                        status_names = {0: "Added", 1: "GettingInfo", 2: "Preload", 3: "Working", 4: "Closed", 5: "InDB"}
                         
                         stats.append({
                             "hash": h[:8],
@@ -564,18 +582,11 @@ async def torrserver_drop(hash: Optional[str] = None) -> Dict[str, Any]:
         
         for torrent in torrents:
             h = torrent.get("hash")
-            if h:
-                # Check status
-                data = await client._post("/torrents", {"action": "get", "hash": h})
-                if isinstance(data, dict):
-                    t = data.get("torrent") if "torrent" in data else data
-                    if isinstance(t, dict):
-                        status_code = int(t.get("stat") or 0)
-                        # Drop only active torrents (Working=2 or Preload=3)
-                        if status_code in (2, 3):
-                            await client._post("/torrents", {"action": "drop", "hash": h})
-                            dropped.append(h[:8])
-                            logger.info(f"Dropped active torrent {h[:8]}")
+            # Drop only active torrents (Preload=2 or Working=3)
+            if h and torrent.get("stat") in (2, 3):
+                await client._post("/torrents", {"action": "drop", "hash": h})
+                dropped.append(h[:8])
+                logger.info(f"Dropped active torrent {h[:8]}")
         
         return {"dropped": len(dropped), "hashes": dropped}
 
